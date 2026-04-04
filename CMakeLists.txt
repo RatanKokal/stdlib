@@ -62,6 +62,24 @@ check_modular("STRINGLIST")
 check_modular("STATS")
 check_modular("SYSTEM")
 
+option(STDLIB_BASE64_SIMD "Enable SIMD backends for Base64" ON)
+option(STDLIB_BASE64_AVX2 "Enable AVX2 backend for Base64 decoding" ON)
+
+set(STDLIB_BASE64_USE_AVX2_BINDING OFF)
+if(STDLIB_BASE64_SIMD
+   AND STDLIB_BASE64_AVX2
+   AND CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|i[3-6]86")
+  enable_language(CXX)
+  include(CheckCXXCompilerFlag)
+  check_cxx_compiler_flag("-mavx2" STDLIB_HAS_MAVX2)
+  check_cxx_compiler_flag("-mbmi2" STDLIB_HAS_MBMI2)
+  if(STDLIB_HAS_MAVX2 AND STDLIB_HAS_MBMI2)
+    set(STDLIB_BASE64_USE_AVX2_BINDING ON)
+  else()
+    message(WARNING "AVX2 Base64 backend requested but compiler lacks -mavx2/-mbmi2; using scalar backend")
+  endif()
+endif()
+
 option(FIND_BLAS "Find external BLAS and LAPACK" ON)
 
 # --- find external BLAS and LAPACK
@@ -146,6 +164,7 @@ list(
   "-DWITH_QP=$<BOOL:${WITH_QP}>"
   "-DWITH_XDP=$<BOOL:${WITH_XDP}>"
   "-DWITH_ILP64=$<BOOL:${WITH_ILP64}>"
+  "-DUSE_C_AVX2_BINDING=$<BOOL:${STDLIB_BASE64_USE_AVX2_BINDING}>"
   "-DPROJECT_VERSION_MAJOR=${PROJECT_VERSION_MAJOR}"
   "-DPROJECT_VERSION_MINOR=${PROJECT_VERSION_MINOR}"
   "-DPROJECT_VERSION_PATCH=${PROJECT_VERSION_PATCH}"

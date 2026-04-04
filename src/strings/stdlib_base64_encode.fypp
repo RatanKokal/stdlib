@@ -1,0 +1,294 @@
+! SPDX-Identifier: MIT
+#:include "common.fypp"
+
+module stdlib_base64_encode
+    use stdlib_kinds, only: sp, dp, xdp, qp, int8, int16, int32, int64, lk
+    use, intrinsic :: iso_c_binding, only: c_ptr, c_f_pointer, c_loc, c_size_t, c_int8_t, c_bool
+    implicit none
+    private
+
+    ! Expose BOTH the ergonomic functions and the high-speed subroutines
+    public :: base64_encode, base64_encode_into
+
+    ! Interface to the C AVX2 implementation
+    #:if USE_C_AVX2_BINDING
+    interface
+        subroutine c_base64_encode_avx2(src, len, dst) bind(C, name="base64_encode_avx2")
+            import :: c_int8_t, c_size_t
+            implicit none
+            integer(c_int8_t), intent(in), dimension(*) :: src
+            integer(c_size_t), intent(in), value :: len
+            integer(c_int8_t), intent(out), dimension(*) :: dst
+        end subroutine c_base64_encode_avx2
+    end interface
+    #:endif
+
+    ! ADDED: Alphabet for the Fortran fallback encoder
+    character(len=64), parameter :: ALPHABET = &
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+    ! ---------------------------------------------------------
+    ! OPTION 1: ERGONOMIC API (Returns allocatable strings)
+    ! ---------------------------------------------------------
+    interface base64_encode
+#:for k1, t1, _, _ in REAL_KINDS_TYPES
+        module procedure :: base64_encode_real_${k1}$
+#:endfor
+#:for k1, t1, _, _ in INT_KINDS_TYPES
+        module procedure :: base64_encode_int_${k1}$
+#:endfor
+#:for k1, t1, _ in CMPLX_KINDS_TYPES
+        module procedure :: base64_encode_cmplx_${k1}$
+#:endfor
+#:for k1, t1 in LOG_KINDS_TYPES
+        module procedure :: base64_encode_logical_${k1}$
+#:endfor
+    end interface base64_encode
+
+
+    ! ---------------------------------------------------------
+    ! OPTION 2: POWER-USER API (Zero-Copy Subroutines)
+    ! ---------------------------------------------------------
+    interface base64_encode_into
+#:for k1, t1, _, _ in REAL_KINDS_TYPES
+        module procedure :: base64_encode_into_real_${k1}$
+#:endfor
+#:for k1, t1, _, _ in INT_KINDS_TYPES
+        module procedure :: base64_encode_into_int_${k1}$
+#:endfor
+#:for k1, t1, _ in CMPLX_KINDS_TYPES
+        module procedure :: base64_encode_into_cmplx_${k1}$
+#:endfor
+#:for k1, t1 in LOG_KINDS_TYPES
+        module procedure :: base64_encode_into_logical_${k1}$
+#:endfor
+    end interface base64_encode_into
+
+
+contains
+
+    ! =======================================================================
+    ! ERGONOMIC FUNCTIONS (Original logic)
+    ! =======================================================================
+
+#:for k1, t1, _, _ in REAL_KINDS_TYPES
+    function base64_encode_real_${k1}$(data) result(str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=:), allocatable, target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) then; str = ""; return; end if
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        str = base64_encode_bytes(raw)
+    end function base64_encode_real_${k1}$
+#:endfor
+
+#:for k1, t1, _, _ in INT_KINDS_TYPES
+    function base64_encode_int_${k1}$(data) result(str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=:), allocatable, target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) then; str = ""; return; end if
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        str = base64_encode_bytes(raw)
+    end function base64_encode_int_${k1}$
+#:endfor
+
+#:for k1, t1, _ in CMPLX_KINDS_TYPES
+    function base64_encode_cmplx_${k1}$(data) result(str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=:), allocatable, target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) then; str = ""; return; end if
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        str = base64_encode_bytes(raw)
+    end function base64_encode_cmplx_${k1}$
+#:endfor
+
+#:for k1, t1 in LOG_KINDS_TYPES
+    function base64_encode_logical_${k1}$(data) result(str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=:), allocatable, target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) then; str = ""; return; end if
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        str = base64_encode_bytes(raw)
+    end function base64_encode_logical_${k1}$
+#:endfor
+
+
+    ! =======================================================================
+    ! POWER-USER SUBROUTINES (Zero-Copy logic)
+    ! =======================================================================
+
+#:for k1, t1, _, _ in REAL_KINDS_TYPES
+    subroutine base64_encode_into_real_${k1}$(data, str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=*), intent(out), target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) return
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        call base64_encode_bytes_into(raw, str)
+    end subroutine base64_encode_into_real_${k1}$
+#:endfor
+
+#:for k1, t1, _, _ in INT_KINDS_TYPES
+    subroutine base64_encode_into_int_${k1}$(data, str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=*), intent(out), target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) return
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        call base64_encode_bytes_into(raw, str)
+    end subroutine base64_encode_into_int_${k1}$
+#:endfor
+
+#:for k1, t1, _ in CMPLX_KINDS_TYPES
+    subroutine base64_encode_into_cmplx_${k1}$(data, str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=*), intent(out), target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) return
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        call base64_encode_bytes_into(raw, str)
+    end subroutine base64_encode_into_cmplx_${k1}$
+#:endfor
+
+#:for k1, t1 in LOG_KINDS_TYPES
+    subroutine base64_encode_into_logical_${k1}$(data, str)
+        ${t1}$, intent(in), target, contiguous :: data(..)
+        character(len=*), intent(out), target :: str
+        integer(int8), pointer :: raw(:)
+        integer(int64) :: nbytes
+        nbytes = int(size(data), int64) * storage_size(data) / 8
+        if (nbytes == 0) return
+        call c_f_pointer(c_loc(data), raw, [nbytes])
+        call base64_encode_bytes_into(raw, str)
+    end subroutine base64_encode_into_logical_${k1}$
+#:endfor
+
+
+    ! =======================================================================
+    ! CORE ENCODER: ISO_C_BINDING TO AVX2 IMPLEMENTATION
+    ! =======================================================================
+    
+    ! The original worker (Function)
+    function base64_encode_bytes(bytes) result(str)
+        integer(int8), intent(in), target, contiguous :: bytes(:)
+        character(len=:), allocatable, target :: str
+        integer(int8), pointer :: out_bytes(:)
+        integer(c_size_t) :: nbytes
+        integer :: str_len
+        integer :: i, j, triplet ! <--- ADDED for fallback
+
+        nbytes = size(bytes, kind=c_size_t)
+        str_len = 4 * ((int(nbytes) + 2) / 3)
+        
+        allocate(character(len=str_len) :: str)
+        if (nbytes == 0) return
+
+        #:if USE_C_AVX2_BINDING
+        ! --- CHANGED: Wrap C-call in preprocessor guard ---
+        ! Map the Fortran string memory to an int8 array pointer to pass to C
+        call c_f_pointer(c_loc(str(1:1)), out_bytes, [str_len])
+        ! Call the C AVX2 routine directly
+        call c_base64_encode_avx2(bytes, nbytes, out_bytes)
+        #:else
+        ! --- ADDED: Fortran Fallback logic ---
+        j = 1
+        do i = 1, int(nbytes) - 2, 3
+            triplet = ishft(iand(int(bytes(i), 4), 255), 16) + &
+                      ishft(iand(int(bytes(i+1), 4), 255), 8) + &
+                      iand(int(bytes(i+2), 4), 255)
+            
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+2) = ALPHABET(iand(ishft(triplet, -6), 63) + 1 : iand(ishft(triplet, -6), 63) + 1)
+            str(j+3:j+3) = ALPHABET(iand(triplet, 63) + 1 : iand(triplet, 63) + 1)
+            j = j + 4
+        end do
+        if (mod(nbytes, 3_c_size_t) == 1) then
+            triplet = ishft(iand(int(bytes(int(nbytes)), 4), 255), 16)
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+3) = "=="
+        else if (mod(nbytes, 3_c_size_t) == 2) then
+            triplet = ishft(iand(int(bytes(int(nbytes)-1), 4), 255), 16) + &
+                      ishft(iand(int(bytes(int(nbytes)), 4), 255), 8)
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+2) = ALPHABET(iand(ishft(triplet, -6), 63) + 1 : iand(ishft(triplet, -6), 63) + 1)
+            str(j+3:j+3) = "="
+        end if
+        #:endif
+        
+    end function base64_encode_bytes
+
+    ! The new Zero-Copy worker (Subroutine)
+    subroutine base64_encode_bytes_into(bytes, str)
+        integer(int8), intent(in), target, contiguous :: bytes(:)
+        character(len=*), intent(out), target :: str
+        integer(int8), pointer :: out_bytes(:)
+        integer(c_size_t) :: nbytes
+        integer :: str_len
+        integer :: i, j, triplet ! <--- ADDED for fallback
+
+        nbytes = size(bytes, kind=c_size_t)
+        if (nbytes == 0) return
+        
+        str_len = 4 * ((int(nbytes) + 2) / 3)
+        
+        ! Safety bounds check
+        if (len(str) < str_len) return 
+
+        #:if USE_C_AVX2_BINDING
+        ! --- CHANGED: Wrap C-call in preprocessor guard ---
+        ! Map the Fortran string memory to an int8 array pointer to pass to C
+        call c_f_pointer(c_loc(str(1:1)), out_bytes, [str_len])
+        ! Call the C AVX2 routine directly
+        call c_base64_encode_avx2(bytes, nbytes, out_bytes)
+        #:else
+        ! --- ADDED: Fortran Fallback logic ---
+        j = 1
+        do i = 1, int(nbytes) - 2, 3
+            triplet = ishft(iand(int(bytes(i), 4), 255), 16) + &
+                      ishft(iand(int(bytes(i+1), 4), 255), 8) + &
+                      iand(int(bytes(i+2), 4), 255)
+            
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+2) = ALPHABET(iand(ishft(triplet, -6), 63) + 1 : iand(ishft(triplet, -6), 63) + 1)
+            str(j+3:j+3) = ALPHABET(iand(triplet, 63) + 1 : iand(triplet, 63) + 1)
+            j = j + 4
+        end do
+        if (mod(nbytes, 3_c_size_t) == 1) then
+            triplet = ishft(iand(int(bytes(int(nbytes)), 4), 255), 16)
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+3) = "=="
+        else if (mod(nbytes, 3_c_size_t) == 2) then
+            triplet = ishft(iand(int(bytes(int(nbytes)-1), 4), 255), 16) + &
+                      ishft(iand(int(bytes(int(nbytes)), 4), 255), 8)
+            str(j:j)     = ALPHABET(ishft(triplet, -18) + 1 : ishft(triplet, -18) + 1)
+            str(j+1:j+1) = ALPHABET(iand(ishft(triplet, -12), 63) + 1 : iand(ishft(triplet, -12), 63) + 1)
+            str(j+2:j+2) = ALPHABET(iand(ishft(triplet, -6), 63) + 1 : iand(ishft(triplet, -6), 63) + 1)
+            str(j+3:j+3) = "="
+        end if
+        #:endif
+        
+    end subroutine base64_encode_bytes_into
+
+end module stdlib_base64_encode
